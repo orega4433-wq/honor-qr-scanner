@@ -1,0 +1,6 @@
+plugins { id 'com.android.application' }
+android { namespace 'com.orega.honorqr'; compileSdk 35
+ defaultConfig { applicationId 'com.orega.honorqr'; minSdk 26; targetSdk 28; versionCode 1; versionName '1.0' }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies { implementation 'com.journeyapps:zxing-android-embedded:4.3.0' }
