@@ -24,6 +24,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 import com.google.zxing.*;
 import com.google.zxing.common.HybridBinarizer;
+import com.google.zxing.client.result.AddressBookParsedResult;
+import com.google.zxing.client.result.ParsedResult;
+import com.google.zxing.client.result.ResultParser;
+import android.provider.ContactsContract;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.EnumMap;
@@ -163,25 +167,57 @@ public class MainActivity extends Activity {
     }
 
     private void showResult(String value) {
-        closeCamera();
         status.setText("QR-код считан");
-        new AlertDialog.Builder(this).setTitle("QR-код считан").setMessage(value)
-            .setPositiveButton("Открыть",(d,w)->{
-                Uri uri=Uri.parse(value);
-                String scheme=uri.getScheme();
-                if(scheme!=null&&(scheme.equalsIgnoreCase("http")||scheme.equalsIgnoreCase("https"))) {
-                    try { startActivity(new Intent(Intent.ACTION_VIEW,uri)); }
-                    catch(Exception e) { Toast.makeText(this,"Не удалось открыть ссылку",Toast.LENGTH_LONG).show(); }
-                } else Toast.makeText(this,"Это не веб-ссылка",Toast.LENGTH_LONG).show();
-                scanning=false; startCamera();
+        ParsedResult parsed = ResultParser.parseResult(
+            new Result(value, null, null, BarcodeFormat.QR_CODE));
+        boolean isContact = parsed instanceof AddressBookParsedResult;
+        String action = isContact ? "Сохранить контакт" : "Открыть";
+        new AlertDialog.Builder(this).setTitle(isContact ? "Контакт найден" : "QR-код считан")
+            .setMessage(value)
+            .setPositiveButton(action,(d,w)->{
+                if(isContact) {
+                    openContact((AddressBookParsedResult)parsed);
+                } else {
+                    Uri uri=Uri.parse(value);
+                    String scheme=uri.getScheme();
+                    if(scheme!=null&&(scheme.equalsIgnoreCase("http")||scheme.equalsIgnoreCase("https"))) {
+                        try { startActivity(new Intent(Intent.ACTION_VIEW,uri)); }
+                        catch(Exception e) { Toast.makeText(this,"Не удалось открыть ссылку",Toast.LENGTH_LONG).show(); }
+                    } else Toast.makeText(this,"Это не веб-ссылка",Toast.LENGTH_LONG).show();
+                }
+                scanning=false;
             })
             .setNeutralButton("Копировать",(d,w)->{
-                ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("QR",value));
-                scanning=false; startCamera();
+                ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE))
+                    .setPrimaryClip(ClipData.newPlainText("QR",value));
+                scanning=false;
             })
-            .setNegativeButton("Закрыть",(d,w)->{scanning=false;startCamera();})
-            .setOnCancelListener(d->{scanning=false;startCamera();})
+            .setNegativeButton("Закрыть",(d,w)->{scanning=false;})
+            .setOnCancelListener(d->{scanning=false;})
             .show();
+    }
+
+    private void openContact(AddressBookParsedResult contact) {
+        try {
+            Intent intent = new Intent(ContactsContract.Intents.Insert.ACTION);
+            intent.setType(ContactsContract.RawContacts.CONTENT_TYPE);
+            String[] names=contact.getNames();
+            if(names!=null && names.length>0) intent.putExtra(ContactsContract.Intents.Insert.NAME,names[0]);
+            String[] phones=contact.getPhoneNumbers();
+            if(phones!=null && phones.length>0) intent.putExtra(ContactsContract.Intents.Insert.PHONE,phones[0]);
+            if(phones!=null && phones.length>1) intent.putExtra(ContactsContract.Intents.Insert.SECONDARY_PHONE,phones[1]);
+            if(phones!=null && phones.length>2) intent.putExtra(ContactsContract.Intents.Insert.TERTIARY_PHONE,phones[2]);
+            String[] emails=contact.getEmails();
+            if(emails!=null && emails.length>0) intent.putExtra(ContactsContract.Intents.Insert.EMAIL,emails[0]);
+            if(emails!=null && emails.length>1) intent.putExtra(ContactsContract.Intents.Insert.SECONDARY_EMAIL,emails[1]);
+            String org=contact.getOrg();
+            if(org!=null) intent.putExtra(ContactsContract.Intents.Insert.COMPANY,org);
+            String[] addresses=contact.getAddresses();
+            if(addresses!=null && addresses.length>0) intent.putExtra(ContactsContract.Intents.Insert.POSTAL,addresses[0]);
+            startActivity(intent);
+        } catch(Exception e) {
+            Toast.makeText(this,"Не удалось открыть контакты: "+e.getMessage(),Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showError(String message) { runOnUiThread(()->status.setText(message)); }
