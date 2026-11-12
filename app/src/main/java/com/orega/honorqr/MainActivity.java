@@ -8,6 +8,9 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.util.Size;
+import android.widget.Button;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.*;
 import android.media.Image;
@@ -43,6 +46,10 @@ public class MainActivity extends Activity {
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private boolean scanning = false;
+    private boolean opening = false;
+    private CaptureRequest.Builder previewRequest;
+    private boolean torchOn = false;
+    private Button torchButton;
     private long lastDecode = 0;
     private final MultiFormatReader decoder = new MultiFormatReader();
 
@@ -61,9 +68,14 @@ public class MainActivity extends Activity {
         status.setTextSize(18);
         status.setPadding(0,0,0,p);
         root.addView(status);
+        torchButton = new Button(this);
+        torchButton.setText("Фонарик: выкл.");
+        torchButton.setOnClickListener(v -> toggleTorch());
+        root.addView(torchButton);
         preview = new TextureView(this);
         root.addView(preview, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,0,1));
         setContentView(root);
+        preview.setOnClickListener(v -> refocus());
         preview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture texture,int w,int h) { startCamera(); }
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture,int w,int h) {}
@@ -81,7 +93,7 @@ public class MainActivity extends Activity {
     }
 
     private void startCamera() {
-        if (camera != null || cameraHandler == null || isFinishing()) return;
+        if (camera != null || opening || cameraHandler == null || isFinishing()) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_REQUEST);
             return;
@@ -95,18 +107,33 @@ public class MainActivity extends Activity {
                 if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) { chosen = id; break; }
             }
             if (chosen == null) { showError("Задняя камера не найдена"); return; }
-            reader = ImageReader.newInstance(640,480,ImageFormat.YUV_420_888,2);
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(chosen);
+            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            Size selected = new Size(640,480);
+            if(map!=null) {
+                Size[] supported=map.getOutputSizes(ImageFormat.YUV_420_888);
+                if(supported!=null) for(Size size:supported) {
+                    if(size.getWidth()>=960 && size.getWidth()<=1920 && size.getHeight()>=720 && size.getHeight()<=1080) {
+                        if(selected.getWidth()<960 || Math.abs(size.getWidth()-1280)+Math.abs(size.getHeight()-720)<Math.abs(selected.getWidth()-1280)+Math.abs(selected.getHeight()-720)) selected=size;
+                    }
+                }
+            }
+            final int frameWidth=selected.getWidth(),frameHeight=selected.getHeight();
+            reader = ImageReader.newInstance(frameWidth,frameHeight,ImageFormat.YUV_420_888,2);
             reader.setOnImageAvailableListener(r -> decodeFrame(r),cameraHandler);
             status.setText("Открываю камеру...");
+            opening=true;
             manager.openCamera(chosen,new CameraDevice.StateCallback() {
                 @Override public void onOpened(CameraDevice device) {
+                    opening=false;
                     camera = device;
                     try {
                         SurfaceTexture texture = preview.getSurfaceTexture();
                         if (texture == null) { showError("Поверхность камеры недоступна"); return; }
-                        texture.setDefaultBufferSize(640,480);
+                        texture.setDefaultBufferSize(frameWidth,frameHeight);
                         Surface surface = new Surface(texture);
                         CaptureRequest.Builder request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                        previewRequest=request;
                         request.addTarget(surface);
                         request.addTarget(reader.getSurface());
                         request.set(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
@@ -122,10 +149,10 @@ public class MainActivity extends Activity {
                         },cameraHandler);
                     } catch (Exception e) { showError("Настройка камеры: "+e.getMessage()); }
                 }
-                @Override public void onDisconnected(CameraDevice device) { device.close(); camera=null; showError("Камера отключена"); }
-                @Override public void onError(CameraDevice device,int error) { device.close(); camera=null; showError("Ошибка камеры: "+error); }
+                @Override public void onDisconnected(CameraDevice device) { opening=false; device.close(); camera=null; showError("Камера отключена"); }
+                @Override public void onError(CameraDevice device,int error) { opening=false; device.close(); camera=null; showError("Ошибка камеры: "+error); }
             },cameraHandler);
-        } catch (Exception e) { showError("Открытие камеры: "+e.getClass().getSimpleName()+": "+e.getMessage()); }
+        } catch (Exception e) { opening=false; showError("Открытие камеры: "+e.getClass().getSimpleName()+": "+e.getMessage()); }
     }
 
     private void decodeFrame(ImageReader source) {
@@ -220,8 +247,30 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void toggleTorch() {
+        torchOn=!torchOn;
+        torchButton.setText(torchOn ? "Фонарик: вкл." : "Фонарик: выкл.");
+        if(session!=null && previewRequest!=null && cameraHandler!=null) {
+            try {
+                previewRequest.set(CaptureRequest.FLASH_MODE,torchOn ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
+                session.setRepeatingRequest(previewRequest.build(),null,cameraHandler);
+            } catch(Exception e) { showError("Фонарик недоступен: "+e.getMessage()); }
+        }
+    }
+    private void refocus() {
+        if(session==null || previewRequest==null || cameraHandler==null) return;
+        try {
+            previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_START);
+            session.capture(previewRequest.build(),null,cameraHandler);
+            previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            session.setRepeatingRequest(previewRequest.build(),null,cameraHandler);
+            status.setText("Фокусировка...");
+        } catch(Exception e) { showError("Фокусировка: "+e.getMessage()); }
+    }
     private void showError(String message) { runOnUiThread(()->status.setText(message)); }
     private void closeCamera() {
+        opening=false;
+        previewRequest=null;
         if(session!=null){try{session.close();}catch(Exception ignored){}session=null;}
         if(camera!=null){try{camera.close();}catch(Exception ignored){}camera=null;}
         if(reader!=null){try{reader.close();}catch(Exception ignored){}reader=null;}
