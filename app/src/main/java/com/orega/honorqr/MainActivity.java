@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.hardware.camera2.params.MeteringRectangle;
+import android.graphics.Rect;
 import android.util.Size;
 import android.widget.Button;
 import android.graphics.SurfaceTexture;
@@ -50,6 +52,18 @@ public class MainActivity extends Activity {
     private CaptureRequest.Builder previewRequest;
     private boolean torchOn = false;
     private Button torchButton;
+    private boolean supportsAf = false;
+    private boolean supportsAfRegions = false;
+    private Rect sensorArea;
+    private long lastFocus = 0;
+    private int afMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+    private final Runnable focusLoop = new Runnable() {
+        @Override public void run() {
+            if(cameraHandler == null || session == null || scanning) return;
+            if(supportsAf && System.currentTimeMillis()-lastFocus >= 2500) triggerAutofocus();
+            if(cameraHandler != null) cameraHandler.postDelayed(this, 2500);
+        }
+    };
     private long lastDecode = 0;
     private final MultiFormatReader decoder = new MultiFormatReader();
 
@@ -109,6 +123,22 @@ public class MainActivity extends Activity {
             if (chosen == null) { showError("Задняя камера не найдена"); return; }
             CameraCharacteristics characteristics = manager.getCameraCharacteristics(chosen);
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            supportsAf = false;
+            afMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+            if(modes != null) {
+                boolean continuous=false, auto=false;
+                for(int mode:modes) {
+                    if(mode==CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) continuous=true;
+                    if(mode==CaptureRequest.CONTROL_AF_MODE_AUTO) auto=true;
+                }
+                supportsAf=continuous || auto;
+                afMode=continuous ? CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE :
+                    (auto ? CaptureRequest.CONTROL_AF_MODE_AUTO : CaptureRequest.CONTROL_AF_MODE_OFF);
+            }
+            Integer regions=characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+            supportsAfRegions=regions!=null && regions>0;
+            sensorArea=characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
             Size selected = new Size(640,480);
             if(map!=null) {
                 Size[] supported=map.getOutputSizes(ImageFormat.YUV_420_888);
@@ -136,13 +166,16 @@ public class MainActivity extends Activity {
                         previewRequest=request;
                         request.addTarget(surface);
                         request.addTarget(reader.getSurface());
-                        request.set(CaptureRequest.CONTROL_AF_MODE,CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                        request.set(CaptureRequest.CONTROL_AF_MODE,afMode);
+                        request.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+                        applyCenterMetering(request);
                         device.createCaptureSession(Arrays.asList(surface,reader.getSurface()),new CameraCaptureSession.StateCallback() {
                             @Override public void onConfigured(CameraCaptureSession s) {
                                 session = s;
                                 try {
                                     s.setRepeatingRequest(request.build(),null,cameraHandler);
                                     runOnUiThread(() -> status.setText("Наведите камеру на QR-код"));
+                                    if(supportsAf) { cameraHandler.removeCallbacks(focusLoop); cameraHandler.postDelayed(focusLoop,1200); }
                                 } catch (Exception e) { showError("Запуск потока: "+e.getMessage()); }
                             }
                             @Override public void onConfigureFailed(CameraCaptureSession s) { showError("Не удалось настроить камеру"); }
@@ -257,19 +290,36 @@ public class MainActivity extends Activity {
             } catch(Exception e) { showError("Фонарик недоступен: "+e.getMessage()); }
         }
     }
-    private void refocus() {
-        if(session==null || previewRequest==null || cameraHandler==null) return;
+    private void applyCenterMetering(CaptureRequest.Builder request) {
+        if(!supportsAfRegions || sensorArea==null) return;
+        int cx=sensorArea.centerX(),cy=sensorArea.centerY();
+        int half=Math.max(100,Math.min(sensorArea.width(),sensorArea.height())/5);
+        Rect region=new Rect(Math.max(sensorArea.left,cx-half),Math.max(sensorArea.top,cy-half),
+            Math.min(sensorArea.right,cx+half),Math.min(sensorArea.bottom,cy+half));
+        request.set(CaptureRequest.CONTROL_AF_REGIONS,
+            new MeteringRectangle[]{new MeteringRectangle(region,MeteringRectangle.METERING_WEIGHT_MAX)});
+    }
+
+    private void triggerAutofocus() {
+        if(!supportsAf || session==null || previewRequest==null || cameraHandler==null || scanning) return;
+        lastFocus=System.currentTimeMillis();
         try {
+            previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
+            session.capture(previewRequest.build(),null,cameraHandler);
             previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_START);
             session.capture(previewRequest.build(),null,cameraHandler);
             previewRequest.set(CaptureRequest.CONTROL_AF_TRIGGER,CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
             session.setRepeatingRequest(previewRequest.build(),null,cameraHandler);
-            status.setText("Фокусировка...");
-        } catch(Exception e) { showError("Фокусировка: "+e.getMessage()); }
+        } catch(Exception e) { showError("Автофокус: "+e.getMessage()); }
+    }
+
+    private void refocus() {
+        if(cameraHandler!=null) cameraHandler.post(() -> triggerAutofocus());
     }
     private void showError(String message) { runOnUiThread(()->status.setText(message)); }
     private void closeCamera() {
         opening=false;
+        if(cameraHandler!=null) cameraHandler.removeCallbacks(focusLoop);
         previewRequest=null;
         if(session!=null){try{session.close();}catch(Exception ignored){}session=null;}
         if(camera!=null){try{camera.close();}catch(Exception ignored){}camera=null;}
