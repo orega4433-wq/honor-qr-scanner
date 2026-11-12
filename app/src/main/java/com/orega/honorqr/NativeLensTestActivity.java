@@ -31,11 +31,18 @@ public class NativeLensTestActivity extends Activity {
         fallback.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(fallback);
         setContentView(root);
+        // Verified on HONOR: code_scan opens the native QR scanner.
+        launchNative("code_scan");
     }
     private void add(LinearLayout root, String title, String path) {
         Button b = new Button(this);
         b.setText(title);
         b.setOnClickListener(v -> {
+            launchNative(path);
+        });
+        root.addView(b, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+    private void launchNative(String path) {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("hn://com.hihonor.lens/" + path));
             i.addCategory(Intent.CATEGORY_BROWSABLE);
             i.setPackage("com.hihonor.lens");
@@ -47,7 +54,5 @@ public class NativeLensTestActivity extends Activity {
             } catch (Exception e) {
                 status.setText("Ошибка: " + path + "\n" + e.toString());
             }
-        });
-        root.addView(b, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 }
