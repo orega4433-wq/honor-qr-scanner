@@ -1,1 +1,10 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.CAMERA"/><application android:label="QR Сканер" android:icon="@drawable/qr_icon" android:roundIcon="@drawable/qr_icon" android:theme="@android:style/Theme.Material.NoActionBar"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<uses-permission android:name="android.permission.CAMERA"/>
+<uses-permission android:name="com.hihonor.docscan.permission.ACCESS"/>
+<queries><package android:name="com.hihonor.lens"/></queries>
+<application android:label="HONOR Lens тест" android:icon="@drawable/qr_icon" android:roundIcon="@drawable/qr_icon" android:theme="@android:style/Theme.Material.NoActionBar">
+<activity android:name=".MainActivity" android:exported="false"/>
+<activity android:name=".NativeLensTestActivity" android:exported="true">
+<intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+</activity>
+</application></manifest>
